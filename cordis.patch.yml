@@ -1,0 +1,8 @@
+# dsh-display-polish bundle patch: inserts its plugin row into the profile
+# roster so the client-modules scanner picks up the dsh.client bundle.
+# The host half is a no-op; all behavior lives in the browser half
+# (lib/client.js): it shadows the official stats cell in the composer dock and
+# adds per-turn cost / duration pills next to the official timestamp.
+- insert:
+    - id: display-polish
+      name: 'dsh-display-polish'

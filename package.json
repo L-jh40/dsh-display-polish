@@ -1,0 +1,68 @@
+{
+  "name": "dsh-display-polish",
+  "version": "0.4.5",
+  "description": "DSH Web GUI display polish: finer money and time readouts for the official usage pills. Shadows the composer stats cell (CACHE hit rate to 2 decimals, model / tool / wait split) and adds per-turn cost and duration pills next to the official timestamp, with a 4-decimal cost breakdown and a sub-tool call summary.",
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "node test/render.smoke.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "README.zh.md"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "usage",
+    "cost",
+    "time",
+    "ui"
+  ],
+  "author": "L-jh40",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/L-jh40/dsh-display-polish.git"
+  },
+  "homepage": "https://github.com/L-jh40/dsh-display-polish#readme",
+  "bugs": {
+    "url": "https://github.com/L-jh40/dsh-display-polish/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    },
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    }
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}
