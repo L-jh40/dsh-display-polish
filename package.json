@@ -1,6 +1,6 @@
 {
   "name": "dsh-display-polish",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "DSH Web GUI display polish: finer money and time readouts for the official usage pills. Shadows the composer stats cell (CACHE hit rate to 2 decimals, model / tool / wait split) and adds per-turn cost and duration pills next to the official timestamp, with a 4-decimal cost breakdown and a sub-tool call summary.",
   "type": "module",
   "packageManager": "pnpm@11.7.0",
