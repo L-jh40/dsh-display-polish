@@ -29,7 +29,7 @@ const require = ((cache) => (name) => {
 
 const { JSDOM } = require('jsdom')
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { pretendToBeVisual: true, url: 'http://127.0.0.1:3080/' })
-for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'Event', 'MouseEvent', 'KeyboardEvent', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame']) {
+for (const key of ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'Event', 'MouseEvent', 'KeyboardEvent', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'localStorage']) {
   if (dom.window[key] === undefined) continue
   Object.defineProperty(globalThis, key, { value: dom.window[key], configurable: true, writable: true })
 }
@@ -45,6 +45,8 @@ const source = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
 const requireShim = (id) => {
   if (id === 'react') return React
   if (id === '@deepseek-ai/dsh-client-ui-primitives') return primitives
+  // 弹层用 createPortal 挂到 body：测试里直接内联渲染就够了（断言只看文本/结构）。
+  if (id === 'react-dom') return { createPortal: (node) => node }
   throw new Error('unexpected require: ' + id)
 }
 const loadPlugin = () => {
@@ -56,6 +58,74 @@ const loadPlugin = () => {
 const plugin = loadPlugin()
 /** 插件源码（断言 CSS/几何实现细节时用）。 */
 
+
+const cssText = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
+
+/*
+ * 组件现在自带语言（useTranslate，默认中文，弹层底部可切中/EN），不再读 props.t：
+ * 这里给一个「原样返回 key」的占位，若哪天又有组件依赖宿主 t，断言会因为出现 stats.* 而失败。
+ */
+const t = (key) => key
+
+const checks = []
+const check = (label, ok) => checks.push([label, ok])
+const pump = async () => { await act(async () => { await Promise.resolve() }) }
+const flush = async () => { for (let i = 0; i < 10; i += 1) await pump() }
+const render = async (element) => {
+  const host = dom.window.document.createElement('div')
+  dom.window.document.body.appendChild(host)
+  const root = createRoot(host)
+  await act(async () => { root.render(element) })
+  await flush()
+  return { host, root }
+}
+const click = async (el) => { await act(async () => { el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) }); await flush() }
+
+const makeCtx = (registrations, { failFirst = 0, occupants = [{ id: 'stats', priority: 0 }] } = {}) => {
+  let failures = failFirst
+  return {
+    effect: (fn) => { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
+    locale: { register: () => () => {} },
+    sessions: { list: { getSnapshot: () => ({ current: 'session-smoke' }), subscribe: () => () => {} } },
+    inject: (deps, callback) => callback({
+      effect: (fn) => { fn() },
+      slots: {
+        // 0.2.0 只有 stats；0.2.1 起拆成 activity + usage（插件按占位者探测决定注册哪套 id）。
+        snapshot: (name) => name === 'conversation.composer.dock' ? [{ key: name, occupants }] : [],
+        register: (options, component) => {
+          if (failures > 0) { failures -= 1; throw new Error('slot not declared (test)') }
+          registrations.push({ options, component })
+          return () => {}
+        },
+      },
+    }),
+  }
+}
+
+// ---------- 注册 ----------
+const registrations = []
+plugin.apply(makeCtx(registrations))
+console.log('registered:', registrations.map((r) => r.options.name + (r.options.id !== undefined ? '#' + r.options.id : '#' + r.options.key)).join(', '))
+check('注册 dock#stats(priority -1) + assistant-actions#turn-cost + turnTail 兜底', registrations.length === 3 && registrations[0].options.id === 'stats' && registrations[0].options.priority === -1 && registrations[1].name === undefined && registrations[1].options.name === 'conversation.chat.assistant-actions' && registrations[1].options.id === 'turn-cost' && registrations[2].options.name === 'conversation.chat.turnTail' && registrations[2].options.id === 'turn-pills-fallback')
+
+// 0.2.1 的 dock 是两个条目：探测到 activity 时要在 activity / usage 上各注册一个 -1，否则官方 pill 会重现。
+const splitRegistrations = []
+loadPlugin().apply(makeCtx(splitRegistrations, { occupants: [{ id: 'activity', priority: 0 }, { id: 'usage', priority: 0 }] }))
+check('dock 0.2.1：按 activity / usage 两个 id 各注册 priority -1', splitRegistrations.length === 4 && splitRegistrations[0].options.id === 'activity' && splitRegistrations[1].options.id === 'usage' && splitRegistrations[0].options.priority === -1 && splitRegistrations[1].options.priority === -1 && splitRegistrations[0].options.order === 0 && splitRegistrations[1].options.order === 1)
+
+const retryRegistrations = []
+loadPlugin().apply(makeCtx(retryRegistrations, { failFirst: 2 }))
+await new Promise((resolve) => setTimeout(resolve, 900))
+check('槽位尚未声明时按 250ms 重试注册', retryRegistrations.length === 3)
+
+// ---------- 会话统计 pill ----------
+const usage = { uncachedInputTokens: 100, cacheReadTokens: 9900, cacheWriteTokens: 0, outputTokens: 500 }
+const stats = { turns: 2, steps: 3, llmMs: 5000, toolMs: 1000, ttftMs: 800, ttftSteps: 2, decodeMs: 4000, decodeTokens: 200 }
+globalThis.fetch = async (url) => {
+  if (String(url).startsWith('/api/balance/turns')) return { ok: true, json: async () => ({ ok: true, totals: { waitMs: 4200 }, turns: [] }) }
+  return { ok: true, json: async () => ({ ok: false }) }
+}
+const statsComp = registrations.find((r) => r.options.id === 'stats').component
 // ---------- DESKTOP-LIKE：无客户端 projection / 无节点数据，只有主机端 /turns ----------
 {
   const hostPayload = {
@@ -63,6 +133,7 @@ const plugin = loadPlugin()
     totals: { turns: 3, steps: 81, llmMs: 665753, toolMs: 73556, waitMs: 0, askMs: 0, uncachedInputTokens: 5424, cacheReadTokens: 8883840, cacheWriteTokens: 0, outputTokens: 7234, cost: 0.19 },
     turns: [
       { turn: 3, model: 'deepseek-v4.1-flash-expires-on-0910', modelName: 'DeepSeek-V4.1-Flash-Expires-On-0910', steps: 4, runMs: 83000, totalTokens: 1000, llmMs: 12000, toolMs: 45000, waitMs: 3000, askMs: 0, ttftMs: 1234, tokensPerSecond: 42.5, cost: 0.1976,
+        messageIds: ['m-1'],
         detail: { uncachedInputTokens: 5424, cacheReadTokens: 8883840, cacheWriteTokens: 0, outputTokens: 7234, uncachedInputCost: 0.0145, cacheReadCost: 0.1777, outputCost: 0.0054 },
         stepsDetail: [{ step: 1, tools: [{ name: 'run_code', count: 1 }], subTools: [{ name: 'pwsh', count: 2 }], cost: 0.0156 }] },
     ],
@@ -98,117 +169,6 @@ const plugin = loadPlugin()
   globalThis.fetch = realFetch
 }
 
-const cssText = readFileSync(join(here, '..', 'lib', 'client.js'), 'utf8')
-
-const dict = {
-  'number.groupSeparator': ',', 'number.thousand': '{value}K', 'number.million': '{value}M',
-  'stats.counts': '{turns} 轮 {steps} 步',
-  'stats.llmShort': '模型 {duration}',
-  'stats.toolShort': '工具 {duration}',
-  'stats.waitShort': '等待 {duration}',
-  'stats.cacheHit': '缓存命中 {percent}%',
-  'stats.cacheHitLabel': '缓存命中率',
-  'stats.provider': '提供方',
-  'stats.model': '模型',
-  'stats.dialog.title': '会话统计',
-  'stats.dialog.usageTitle': 'Token 用量',
-  'stats.dialog.llmTime': '模型用时',
-  'stats.dialog.toolTime': '工具调用用时',
-  'stats.dialog.ttft': '首 token 平均（TTFT）',
-  'stats.dialog.speed': '输出速度（TPS）',
-  'stats.waitUser': '等待用户选择',
-  'stats.askWait': '询问用时',
-  'stats.turnUsageTitle': '本轮用量',
-  'stats.turnUsageTitleCost': '本轮用量（{cost} 元）',
-  'stats.turnUsageTrigger': '本轮 {cost} 元',
-  'stats.reasoningLabel': '推理输出（{cost} 元）',
-  'stats.reasoningLabelPlain': '推理输出',
-  'stats.timeOther': '其他',
-  'stats.withCost': '{label}（{cost} 元）',
-  'stats.toolTotal': '工具调用（{amount} 元）',
-  'stats.toolPerTool': '按工具',
-  'stats.toolPerStep': '按 step',
-  'stats.toolSummary': '{name} ×{count} → {amount} 元',
-  'stats.toolStep': 'step {step}: {tools} → 本步 {amount} 元',
-  'duration.compactSeconds': '{seconds}秒',
-  'duration.compactMinutes': '{minutes}分{seconds}秒',
-  'duration.seconds': '{seconds}秒',
-  'duration.minutes': '{minutes}分{seconds}秒',
-  'message.tokensPerSecond': '{tps} tok/s',
-  'message.ranFor': '用时 {duration}',
-  'message.turnUsage.title': '本轮用量',
-  'message.turnUsage.count': '{count} tok',
-  'message.turnUsage.cacheHit': '缓存命中',
-  'message.turnUsage.input': '未缓存输入',
-  'message.turnUsage.cacheRead': '缓存输入',
-  'message.turnUsage.cacheWrite': '缓存写入',
-  'message.turnUsage.output': '输出',
-  'message.turnUsage.reasoning': '（其中推理 {tokens}）',
-  'message.turnTime.title': '本轮用时和速度',
-  'message.turnTime.duration': '本轮总用时',
-  'message.turnTime.speed': '输出速度（TPS）',
-  'message.turnTime.ttft': '首 token 用时（TTFT）',
-}
-const missingKeys = new Set()
-const t = (key, params) => {
-  const template = dict[key]
-  if (template === undefined) { missingKeys.add(key); return '__' + key + '__' }
-  if (params === undefined) return template
-  return template.replace(/\{(\w+)\}/g, (match, name) => (name in params ? String(params[name]) : match))
-}
-
-const checks = []
-const check = (label, ok) => checks.push([label, ok])
-const pump = async () => { await act(async () => { await Promise.resolve() }) }
-const flush = async () => { for (let i = 0; i < 10; i += 1) await pump() }
-const render = async (element) => {
-  const host = dom.window.document.createElement('div')
-  dom.window.document.body.appendChild(host)
-  const root = createRoot(host)
-  await act(async () => { root.render(element) })
-  await flush()
-  return { host, root }
-}
-const click = async (el) => { await act(async () => { el.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })) }); await flush() }
-
-const makeCtx = (registrations, { failFirst = 0 } = {}) => {
-  let failures = failFirst
-  return {
-    effect: (fn) => { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
-    locale: { register: () => () => {} },
-    sessions: { list: { getSnapshot: () => ({ current: 'session-smoke' }), subscribe: () => () => {} } },
-    inject: (deps, callback) => callback({
-      effect: (fn) => { fn() },
-      slots: {
-        register: (options, component) => {
-          if (failures > 0) { failures -= 1; throw new Error('slot not declared (test)') }
-          registrations.push({ options, component })
-          return () => {}
-        },
-      },
-    }),
-  }
-}
-
-// ---------- 注册 ----------
-const registrations = []
-plugin.apply(makeCtx(registrations))
-console.log('registered:', registrations.map((r) => r.options.name + (r.options.id !== undefined ? '#' + r.options.id : '#' + r.options.key)).join(', '))
-check('注册 dock#stats(priority -1) 与 assistant-actions#turn-cost', registrations.length === 2 && registrations[0].options.id === 'stats' && registrations[0].options.priority === -1 && registrations[1].options.name === 'conversation.chat.assistant-actions' && registrations[1].options.id === 'turn-cost')
-
-const retryRegistrations = []
-loadPlugin().apply(makeCtx(retryRegistrations, { failFirst: 2 }))
-await new Promise((resolve) => setTimeout(resolve, 900))
-check('槽位尚未声明时按 250ms 重试注册', retryRegistrations.length === 2)
-
-// ---------- 会话统计 pill ----------
-const usage = { uncachedInputTokens: 100, cacheReadTokens: 9900, cacheWriteTokens: 0, outputTokens: 500 }
-const stats = { turns: 2, steps: 3, llmMs: 5000, toolMs: 1000, ttftMs: 800, ttftSteps: 2, decodeMs: 4000, decodeTokens: 200 }
-globalThis.fetch = async (url) => {
-  if (String(url).startsWith('/api/balance/turns')) return { ok: true, json: async () => ({ ok: true, totals: { waitMs: 4200 }, turns: [] }) }
-  return { ok: true, json: async () => ({ ok: false }) }
-}
-const statsComp = registrations.find((r) => r.options.id === 'stats').component
 const pills = await render(React.createElement(statsComp, {
   t, sessionId: 'session-dock',
   useChat: (selector) => selector({ legacy: { nodes: [] } }),
@@ -217,7 +177,7 @@ const pills = await render(React.createElement(statsComp, {
 const pillsText = pills.host.textContent
 console.log('PILLS TEXT:', JSON.stringify(pillsText))
 check('会话缓存命中：官方计算方式 + 两位小数（99.00%）', pillsText.includes('缓存命中 99.00%'))
-check('会话内联用短标签（模型/工具/等待）', pillsText.includes('模型 5秒') && pillsText.includes('工具 1秒') && pillsText.includes('等待 4.2秒') && !pillsText.includes('模型用时'))
+check('会话内联用短标签（模型/工具/等待，分钟粒度）', pillsText.includes('模型 1分') && pillsText.includes('工具 1分') && pillsText.includes('等待 1分') && !pillsText.includes('模型用时'))
 check('用量 pill 缓存命中固定可见', cssText.includes('.SSPv_pillFixed{flex:none}') && cssText.includes('cls.pillFixed'))
 check('会话行腾出空间：轮数步数不再占用内联', !pillsText.includes('2 轮 3 步'))
 // 点开时间 pill：官方四项 + 等待，且轮数/步数移到弹层标题里（信息不丢）
@@ -262,8 +222,14 @@ const hostTurn = {
   llmMs: 12000, toolMs: 45000, waitMs: 3000, askMs: 20000, ttftMs: 1234, tokensPerSecond: 42.5,
   detail: { uncachedInputTokens: 5424, cacheReadTokens: 8883840, outputTokens: 7234, uncachedInputCost: 0.0145, cacheReadCost: 0.1777, outputCost: 0.0054 },
   stepsDetail: [
-    { step: 1, tools: [{ name: 'run_code', count: 1 }], subTools: [{ name: 'pwsh', count: 2 }, { name: 'read', count: 1 }], cost: 0.0156 },
-    { step: 2, tools: [{ name: 'run_code', count: 1 }], subTools: [{ name: 'pwsh', count: 1 }], cost: 0.0161 },
+    { step: 1, tools: [{ name: 'run_code', count: 1 }], subTools: [{ name: 'pwsh', count: 2 }, { name: 'read', count: 1 }], cost: 0.0156,
+      uncachedInputTokens: 5424, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 120 },
+    { step: 2, tools: [{ name: 'run_code', count: 1 }], subTools: [{ name: 'pwsh', count: 1 }], cost: 0.0161,
+      uncachedInputTokens: 300, cacheReadTokens: 9000, cacheWriteTokens: 0, outputTokens: 80 },
+    // 纯思考步（这一步没有工具调用）：按步明细里也必须出现，并带 4 个 token 桶。
+    // 它的 cacheRead(2000) < 上一步 prompt(9300) → 旧对话缓存失效 7300 tok。
+    { step: 3, tools: [], cost: 0.01,
+      uncachedInputTokens: 1000, cacheReadTokens: 2000, cacheWriteTokens: 0, outputTokens: 60 },
   ],
 }
 globalThis.fetch = async (url) => {
@@ -314,11 +280,41 @@ check('模型显示目录里的名称而不是路由 id', usageText.includes('�
 check('每轮缓存命中两位小数（99.94%）', usageText.includes('缓存命中率99.94%'))
 check('分桶带元金额与 token', usageText.includes('未缓存输入（0.0145 元）5,424 tok') && usageText.includes('缓存输入（0.1777 元）8,883,840 tok') && usageText.includes('输出（0.0054 元）7,234 tok'))
 check('输出行不再内联「其中推理」', !usageText.includes('其中推理'))
-check('推理单独一行（" -" 前缀 + 按占比折算金额）', usageText.includes('-推理输出（0.0016 元）2,116 tok'))
-check('工具调用金额与明细', usageText.includes('工具调用（0.0317 元）') && usageText.includes('run_code ×2 → 0.0317 元') && usageText.includes('step 1: run_code ×1 → 本步 0.0156 元'))
-check('子工具按层级显示（工具下面的 -pwsh / -read）', usageText.includes('-pwsh ×3') && usageText.includes('-read ×1'))
-check('每步子工具也按层级显示', usageText.includes('-pwsh ×2') && usageText.includes('-read ×1'))
-check('弹层底部对齐（固定底线 − 面板高）', cssText.includes('panelBottom - height') && cssText.includes('PANEL_BOTTOM_RATIO'))
+check('推理单独一行（" -" 前缀 + 按占比折算金额）', usageText.includes('-推理输出（0.0016 元） 2,116 tok'))
+check('工具调用金额与明细', usageText.includes('工具调用所在步花费（0.0317 元）') && usageText.includes('运行代码 ×2 → 0.0317 元'))
+check('子工具按层级显示（工具下面的 pwsh / 读取）', usageText.includes('pwsh ×3 → 0.0265 元') && usageText.includes('读取 ×1 → 0.0052 元'))
+check('每步子工具也按层级显示', usageText.includes('-pwsh ×2') && usageText.includes('-读取 ×1'))
+/* ---- 1.1 按步 4 个 token 桶：第N步（金额，缓存命中%，输出%）+ 桶的具体值 ---- */
+check('按步明细每步都出现（含没有工具调用的纯思考步）', usageText.includes('第1步') && usageText.includes('第2步') && usageText.includes('第3步'))
+check('步头格式：第1步（0.0156 元，缓存命中 0.0%，输出 2.2%）', usageText.includes('第1步（0.0156 元，缓存命中 0.0%，输出 2.2%）'))
+check('步头缓存命中率按本步 prompt 算（第2步 96.8%）', usageText.includes('第2步（0.0161 元，缓存命中 96.8%，输出 0.9%）'))
+check('每步 4 个 token 桶的具体值', usageText.includes('未缓存 5,424 · 缓存读 0 · 缓存写 0 · 输出 120') && usageText.includes('未缓存 300 · 缓存读 9,000 · 缓存写 0 · 输出 80'))
+const stepsEl = slot.querySelector('[data-turn-steps] .SSPv_steps')
+const stepNos = stepsEl === null ? [] : [...stepsEl.children].filter((el) => el.classList.contains('SSPv_stepNo'))
+check('步号单独成列（同一 grid，右对齐 → 第9步/第10步对齐）', stepNos.length === 3 && cssText.includes('.SSPv_steps{grid-template-columns:max-content minmax(0,1fr)') && cssText.includes('.SSPv_stepNo{color:var(--dsw-alias-label-secondary);text-align:right'))
+/* ---- 1.2 上下文里未命中缓存的旧对话 + 额外金额 ---- */
+check('上下文缓存（估算）区块出现', usageText.includes('上下文缓存（估算）') && usageText.includes('旧对话缓存失效'))
+check('首步未缓存输入当上下文基准，并给出「比命中多付」', usageText.includes('首步未缓存输入（基准）') && usageText.includes('5,424 tok（比全部命中缓存多付 0.0144 元）'))
+check('旧对话缓存失效 = 上一步 prompt − 本步缓存读（7,300 tok → 0.0194 元）', usageText.includes('7,300 tok（额外 0.0194 元）'))
+/* ---- 原始数据 + 语言开关 ---- */
+const rawToggle = usageBox.querySelector('[data-raw-toggle]')
+check('弹层底部有「原始数据」按钮', rawToggle !== null && rawToggle.textContent.includes('原始数据'))
+await click(rawToggle)
+const rawBlock = usageBox.querySelector('[data-turn-raw]')
+check('点开后有原始 JSON（含 steps 与 tokenUsage）', rawBlock !== null && rawBlock.textContent.includes('"turn": 2') && rawBlock.textContent.includes('"steps"') && rawBlock.textContent.includes('"tokenUsage"'))
+await click(usageBox.querySelector('[data-raw-toggle]'))
+check('再点一次收起原始数据', usageBox.querySelector('[data-turn-raw]') === null)
+const langGroup = usageBox.querySelector('[data-plugin-lang]')
+check('弹层底部有中/EN 语言开关，默认中文', langGroup !== null && langGroup.getAttribute('data-plugin-lang') === 'zh')
+await click(langGroup.querySelectorAll('button')[1])
+const enText = slot.querySelector('[data-turn-usage-details]')?.parentElement?.textContent ?? ''
+check('切到 EN：第1步 → Step 1 / cache hit', enText.includes('Step 1 (0.0156 CNY, cache hit 0.0%') && !enText.includes('第1步'))
+check('切到 EN 时工具名保持原名（不做中文翻译）', enText.includes('run_code ×1'))
+await click(slot.querySelector('[data-turn-usage-details]')?.parentElement?.querySelector('[data-plugin-lang]')?.querySelectorAll('button')[0])
+const zhBack = slot.querySelector('[data-turn-usage-details]')?.parentElement?.textContent ?? ''
+check('切回中文，且选择写进 localStorage', zhBack.includes('第1步') && dom.window.localStorage.getItem('dsh-display-polish:lang') === 'zh')
+check('弹层里没有漏翻的 key', !usageText.includes('stats.') && !zhBack.includes('stats.'))
+check('弹层底部对齐（固定底线 − 面板高）', cssText.includes('panelBottom - height') && cssText.includes('const PANEL_GAP = 8'))
 
 await click(triggers[0])
 await click(triggers[1])
@@ -353,15 +349,14 @@ const descriptions = fixture.querySelectorAll("[data-presented-file] span[class$
 console.log('hiddenByMarker:', hiddenByMarker.length, 'hiddenByHas:', hiddenByHas.length, 'descriptions:', descriptions.length)
 check('CSS 只隐藏官方两枚 pill（标记写法 + :has 写法都命中）', hiddenByMarker.length === 2 && hiddenByHas.length === 2 && myOrder !== null)
 check('CSS 命中文件卡片总结（类名后缀匹配）', descriptions.length === 1)
-check('CSS 含排序规则（我的 pill 放到分支之后、时间戳之前）', cssText.includes("span.SSPv_root{order:10}") && cssText.includes("span[class$='_timeEnd']{order:20}"))
+check('CSS 含排序规则（我的 pill 放到分支之后、时间戳之前）', cssText.includes("span.SSPv_root{order:1}") && cssText.includes("span[class$='_endInfo']{order:2}"))
 check('弹层水平位置回退为对齐触发 pill 自身', !cssText.includes('data-chat-flow-key') && cssText.includes('Math.min(Math.max(rect.left, PANEL_MARGIN), maxLeft)'))
-check('弹层竖直位置固定（不再跟随触发点/翻转）', cssText.includes('window.innerHeight * PANEL_TOP_RATIO') && !cssText.includes('rect.top - PANEL_GAP - height'))
+check('弹层竖直位置固定（底边贴在触发 pill 上方 PANEL_GAP）', cssText.includes('const panelBottom = rect.top - PANEL_GAP') && cssText.includes('Math.min(Math.max(panelBottom - height, PANEL_MARGIN), maxTop)') && !cssText.includes('rect.top - PANEL_GAP - height'))
 check('宽面板固定高度（工具条数不影响窗口高度）', cssText.includes('.SSPv_panelWide{min-width:min(360px,100vw - 24px);max-width:min(520px,100vw - 24px);height:min(60vh,480px)}'))
 check('文件卡片总结取消截断（完整折行）', cssText.includes("span[class$='_description']{display:block;white-space:normal;overflow:visible;text-overflow:clip;-webkit-line-clamp:unset") && cssText.includes('data-presented-file]{height:auto;min-height:60px}'))
 
 console.log('\n--- 检查项 ---')
 let failed = 0
 for (const [label, ok] of checks) { console.log((ok ? 'PASS  ' : 'FAIL  ') + label); if (!ok) failed += 1 }
-if (missingKeys.size > 0) { console.log('MISSING LOCALE KEYS:', [...missingKeys].join(', ')); failed += 1 }
 console.log(failed === 0 ? '\nALL CHECKS PASSED' : '\n' + failed + ' CHECK(S) FAILED')
 process.exitCode = failed === 0 ? 0 : 1
