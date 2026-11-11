@@ -36,10 +36,11 @@ granularity.
 - **Duration popover**: total run time split into model / tool / wait-for-user /
   ask-wait / other, plus TTFT and TPS.
 - **Per-step detail (0.5.0)**: one line per step, including pure-thinking steps
-  with no tool call — `第1步（0.0186 元，缓存命中 0.00%，输出 2.1%）：读取 ×1、pwsh ×1` —
-  followed by the step's four token buckets (uncached / cache read / cache write /
-  output). The step number lives in its own right-aligned column, so `第9步` and
-  `第10步` line up exactly.
+  with no tool call — `第1步（0.0186 元，0.0%）：读取 ×1、pwsh ×1` — cost and
+  cache-hit rate only. The step number sits in its own left-aligned column whose
+  width follows the widest number (up to three digits), so `第9步` / `第10步` line
+  up while `第1步` starts flush left. The four token buckets (uncached / cache
+  read / cache write / output) live **only in the raw-data block**.
 - **Context cache (estimated, 0.5.0)**: `previous prompt − this step's cache read`
   is the part of the old conversation that lost its cache and was billed as
   uncached; multiplied by (uncached price − cache-read price) it becomes the
@@ -48,11 +49,14 @@ granularity.
   would have saved.
 - **Raw data (0.5.0)**: an unobtrusive `原始数据` button at the bottom of the
   popover dumps the host's per-turn JSON (cost / detail / stepsDetail /
-  tokenUsage) for reconciliation.
-- **中文 / EN (0.5.0)**: Chinese by default, with a small `中 / EN` switch in the
-  popover footer. In Chinese the popover says `第1步` rather than `step 1`, and
-  tool names use DSH's own translations (grep → 搜索文件内容, present → 展示文件)
-  while command-style tools such as `pwsh` keep their wire name.
+  tokenUsage). Every step carries a `"ui"` field with the exact line rendered in
+  the panel (e.g. `"ui": "第9步（0.0120 元，81.0%）"`), and that row also has a
+  `data-step` attribute, so each line can be cross-checked one by one.
+- **中文 / EN (0.5.0)**: Chinese by default; the switch lives in the **session
+  statistics popover** footer, not in the per-turn popover (which can hold
+  hundreds of steps). In Chinese the popover says `第1步` rather than `step 1`,
+  and tool names use DSH's own translations (grep → 搜索文件内容, present →
+  展示文件) while command-style tools such as `pwsh` keep their wire name.
 - Panel placement matches the official stat dialog: anchored just above the
   trigger pill with a fixed height, so a long tool chain scrolls inside the
   panel instead of resizing it.
