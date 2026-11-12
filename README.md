@@ -47,11 +47,11 @@ granularity.
   **extra money** that miss cost. The first step's uncached input is the context
   baseline, and on the very first turn it also reports what a full cache hit
   would have saved.
-- **Raw data (0.5.0)**: an unobtrusive `原始数据` button at the bottom of the
-  popover dumps the host's per-turn JSON (cost / detail / stepsDetail /
-  tokenUsage). Every step carries a `"ui"` field with the exact line rendered in
-  the panel (e.g. `"ui": "第9步（0.0120 元，81.0%）"`), and that row also has a
-  `data-step` attribute, so each line can be cross-checked one by one.
+- **Raw data (0.5.0 / 0.5.2)**: an unobtrusive `原始数据` button at the bottom of
+  the popover, which expands into a readable per-step token list —
+  `第9步  未缓存 10,465 · 缓存读 44,672 · 缓存写 0 · 输出 323` — not a JSON
+  code block. Each row in the panel also carries a `data-step` attribute so the
+  two can be matched one by one.
 - **中文 / EN (0.5.0)**: Chinese by default; the switch lives in the **session
   statistics popover** footer, not in the per-turn popover (which can hold
   hundreds of steps). In Chinese the popover says `第1步` rather than `step 1`,
