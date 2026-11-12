@@ -271,6 +271,9 @@ check('用时 pill 内联本轮总用时', turnText.includes('用时 1分22秒')
 check('插件给收尾行打上标记（CSS 才隐藏官方 pill）', row.getAttribute('data-statsline-turn-pills') === '')
 
 await click(triggers[0])
+// 按步明细是「下一帧」才挂上的（先让面板出现，再建几百行），等一帧再断言
+await new Promise((resolve) => setTimeout(resolve, 80))
+await flush()
 const usageBox = slot.querySelector('[data-turn-usage-details]')?.parentElement
 const usageText = usageBox?.textContent ?? ''
 console.log('TURN USAGE PANEL:', JSON.stringify(usageText))
@@ -296,14 +299,14 @@ check('步号单独成列、顶格左对齐（列宽按最宽步号撑开 → �
 check('上下文缓存（估算）区块出现', usageText.includes('上下文缓存（估算）') && usageText.includes('旧对话缓存失效'))
 check('首步未缓存输入当上下文基准，并给出「比命中多付」', usageText.includes('首步未缓存输入（基准）') && usageText.includes('5,424 tok（比全部命中缓存多付 0.0144 元）'))
 check('旧对话缓存失效 = 上一步 prompt − 本步缓存读（7,300 tok → 0.0194 元）', usageText.includes('7,300 tok（额外 0.0194 元）'))
-/* ---- 原始数据 + 语言开关 ---- */
+/* ---- 原始数据：整理过的按步 token 桶（不是 JSON / 代码块） ---- */
 const rawToggle = usageBox.querySelector('[data-raw-toggle]')
 check('弹层底部有「原始数据」按钮', rawToggle !== null && rawToggle.textContent.includes('原始数据'))
 await click(rawToggle)
 const rawBlock = usageBox.querySelector('[data-turn-raw]')
-check('点开后有原始 JSON（含 steps 与 tokenUsage）', rawBlock !== null && rawBlock.textContent.includes('"turn": 2') && rawBlock.textContent.includes('"steps"') && rawBlock.textContent.includes('"tokenUsage"'))
-check('原始数据里每一步带 ui 标记，可和面板里的行对上', rawBlock !== null && rawBlock.textContent.includes('"ui": "第1步（0.0156 元，0.0%）"'))
-check('4 个 token 桶写在原始数据里（未缓存/缓存读/缓存写/输出）', rawBlock !== null && ['"uncachedInputTokens": 5424', '"cacheReadTokens": 9000', '"cacheWriteTokens": 0', '"outputTokens": 120'].every((k) => rawBlock.textContent.includes(k)))
+check('原始数据是整理过的按步令牌清单，不是 JSON', rawBlock !== null && !rawBlock.textContent.includes('uncachedInputTokens') && rawBlock.textContent.includes('未缓存 5,424 · 缓存读 0 · 缓存写 0 · 输出 120'))
+check('原始数据每步一行，含没有工具调用的纯思考步', rawBlock !== null && rawBlock.textContent.includes('未缓存 300 · 缓存读 9,000 · 缓存写 0 · 输出 80') && rawBlock.textContent.includes('未缓存 1,000 · 缓存读 2,000 · 缓存写 0 · 输出 60'))
+check('原始数据的步号与面板行共用同一列（第1步…第3步）', rawBlock !== null && ['第1步', '第2步', '第3步'].every((k) => rawBlock.textContent.includes(k)))
 check('面板里每一步的 DOM 也带 data-step（可在 devtools 里定位）', slot.querySelector('[data-turn-steps] [data-step="1"]') !== null)
 await click(usageBox.querySelector('[data-raw-toggle]'))
 check('再点一次收起原始数据', usageBox.querySelector('[data-turn-raw]') === null)
@@ -319,7 +322,7 @@ await click(pills.host.querySelector('[data-plugin-lang]').querySelectorAll('but
 const zhBack = slot.querySelector('[data-turn-usage-details]')?.parentElement?.textContent ?? ''
 check('切回中文，且选择写进 localStorage', zhBack.includes('第1步') && dom.window.localStorage.getItem('dsh-display-polish:lang') === 'zh')
 check('弹层里没有漏翻的 key', !usageText.includes('stats.') && !zhBack.includes('stats.'))
-check('弹层底部对齐（固定底线 − 面板高）', cssText.includes('panelBottom - height') && cssText.includes('const PANEL_GAP = 8'))
+check('弹层底边固定在触发 pill 上方（PANEL_GAP）', cssText.includes('const PANEL_GAP = 8') && cssText.includes('const bottom = Math.max(PANEL_MARGIN, window.innerHeight - rect.top + PANEL_GAP)'))
 
 await click(triggers[0])
 await click(triggers[1])
@@ -356,9 +359,9 @@ check('CSS 只隐藏官方两枚 pill（标记写法 + :has 写法都命中）',
 check('CSS 命中文件卡片总结（类名后缀匹配）', descriptions.length === 1)
 check('CSS 含排序规则（我的 pill 放到分支之后、时间戳之前）', cssText.includes("span.SSPv_root{order:1}") && cssText.includes("span[class$='_endInfo']{order:2}"))
 check('弹层水平位置回退为对齐触发 pill 自身', !cssText.includes('data-chat-flow-key') && cssText.includes('Math.min(Math.max(rect.left, PANEL_MARGIN), maxLeft)'))
-check('弹层竖直位置固定（底边贴在触发 pill 上方 PANEL_GAP）', cssText.includes('const panelBottom = rect.top - PANEL_GAP') && cssText.includes('Math.min(Math.max(panelBottom - height, PANEL_MARGIN), maxTop)') && !cssText.includes('rect.top - PANEL_GAP - height'))
-check('宽面板固定高度（工具条数不影响窗口高度）', cssText.includes('.SSPv_panelWide{min-width:min(360px,100vw - 24px);max-width:min(520px,100vw - 24px);height:min(60vh,480px)'))
-check('宽面板关掉 backdrop-filter（上百步时滚动不掉帧）', cssText.includes('height:min(60vh,480px);backdrop-filter:none'))
+check('弹层用左下角锚定（不读面板自身宽高，只渲染一次）', cssText.includes('window.innerHeight - rect.top + PANEL_GAP') && cssText.includes('panel.style.bottom =') && !cssText.includes('panel.offsetHeight'))
+check('宽面板固定高度（工具条数不影响窗口高度）', cssText.includes('.SSPv_panelWide{min-width:min(360px,100vw - 24px);max-width:min(420px,100vw - 24px);height:min(60vh,480px)'))
+check('面板不透明、不做背景模糊（展开不再卡）', cssText.includes('background:var(--dsw-alias-bg-base,#fff);backdrop-filter:none') && !cssText.includes('backdrop-filter:var(--dsw-menu-backdrop-filter)'))
 check('文件卡片总结取消截断（完整折行）', cssText.includes("span[class$='_description']{display:block;white-space:normal;overflow:visible;text-overflow:clip;-webkit-line-clamp:unset") && cssText.includes('data-presented-file]{height:auto;min-height:60px}'))
 
 console.log('\n--- 检查项 ---')
